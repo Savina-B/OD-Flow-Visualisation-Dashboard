@@ -1,0 +1,375 @@
+# -*- coding: utf-8 -*-
+"""
+OD Flow Visualisation Dashboard (Anonymised)
+
+Updates (public):
+- Removed organisation branding + external links
+- Removed enterprise authentication dependency
+- Replaced internal file names/paths with generic placeholders
+- Kept core UX: basemap + opacity settings, scenario picker, filters, zone overlay toggle,
+  centroid click → flow rendering hook
+"""
+
+import os
+import dash
+import dash_bootstrap_components as dbc
+import dash_design_kit as ddk
+from dash import Dash, dcc, html, Input, Output, State, dash_table
+import pandas as pd
+import plotly.graph_objects as go
+import geopandas as gpd
+from configparser import ConfigParser
+
+# -------------------------
+# Paths + constants (public)
+# -------------------------
+MAIN_PATH = os.getcwd()
+BG_COLOUR = "#243c50"
+BORDER_COLOUR = "#243c50"
+FONT_COLOUR = "white"
+
+# Config (generic)
+config_path = os.path.join(MAIN_PATH, "assets", "config.ini")
+config = ConfigParser()
+config.read(config_path)
+
+# Demo layers / data (generic)
+CENTROIDS_PATH = os.path.join(MAIN_PATH, "data", "centroids.csv")
+ZONES_PATH = os.path.join(MAIN_PATH, "data", "zone_boundaries.geojson")
+RUN_LOG_PATH = os.path.join(MAIN_PATH, "data", "run_log.csv")
+
+df_centroids = pd.read_csv(CENTROIDS_PATH)
+run_log_df = pd.read_csv(RUN_LOG_PATH)
+
+zones_gdf = gpd.read_file(ZONES_PATH).to_crs(epsg=4326)
+
+# Basemap options
+MAP_OPTIONS = [
+    {"label": "Open Street Map", "value": "open-street-map"},
+    {"label": "Carto Positron", "value": "carto-positron"},
+    {"label": "Carto Dark Matter", "value": "carto-darkmatter"},
+    {"label": "Stamen Terrain", "value": "stamen-terrain"},
+]
+
+# Filters (generic)
+TIMEPERIOD_OPTIONS = [
+    {"label": "24 Hour", "value": "24"},
+    {"label": "AM", "value": "1"},
+    {"label": "Inter-peak", "value": "2"},
+    {"label": "PM", "value": "3"},
+    {"label": "Off-peak", "value": "4"},
+]
+
+MODE_OPTIONS = [{"label": "Car Driver", "value": "car"}]
+
+PURPOSE_OPTIONS = [
+    {"label": "All", "value": "all"},
+    {"label": "Home-based", "value": "hb"},
+    {"label": "Non-home-based", "value": "nhb"},
+]
+
+DIRECTION_OPTIONS = [
+    {"label": "Production", "value": "o"},
+    {"label": "Attraction", "value": "d"},
+    {"label": "Both", "value": "od"},
+]
+
+# -------------------------
+# Figure helpers (public)
+# -------------------------
+def build_base_map(centroids_df: pd.DataFrame, map_style: str) -> go.Figure:
+    """Initial map shown before any click."""
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scattermapbox(
+            lat=centroids_df["lat"],
+            lon=centroids_df["lon"],
+            mode="markers",
+            marker={"size": 8, "opacity": 0.7},
+            text=centroids_df.get("name", None),
+            hoverinfo="text",
+            name="Centroids",
+        )
+    )
+
+    fig.update_layout(
+        mapbox={
+            "style": map_style,
+            "center": {"lat": 52.6, "lon": -1.5},
+            "zoom": 6,
+        },
+        margin={"l": 0, "r": 0, "t": 0, "b": 0},
+        uirevision=True,
+    )
+    return fig
+
+
+def toggle_zone_layer(fig: go.Figure, zones: gpd.GeoDataFrame, visible: bool) -> go.Figure:
+    """Adds/removes boundary overlay using a Mapbox layer."""
+    fig = go.Figure(fig)
+
+    # NOTE: For a public repo, you can simplify this further or switch to geojson layer traces.
+    layer = {
+        "source": zones.__geo_interface__,
+        "type": "line",
+        "color": "white",
+        "line": {"width": 1},
+        "opacity": 0.6,
+        "visible": visible,
+    }
+
+    fig.update_layout(mapbox={"layers": [layer]})
+    return fig
+
+
+def apply_click_flow_overlay(fig: go.Figure, click_data: dict, opacity_pct: int) -> go.Figure:
+    """
+    Placeholder: in a private version, this would query OD flows for the clicked centroid
+    and render weighted lines. Here we just highlight the selected point.
+    """
+    if not click_data:
+        return fig
+
+    lat = click_data["points"][0]["lat"]
+    lon = click_data["points"][0]["lon"]
+
+    fig = go.Figure(fig)
+    fig.add_trace(
+        go.Scattermapbox(
+            lat=[lat],
+            lon=[lon],
+            mode="markers",
+            marker={"size": 14, "opacity": opacity_pct / 100},
+            name="Selected centroid",
+        )
+    )
+    return fig
+
+
+# -------------------------
+# App
+# -------------------------
+app = Dash(__name__, external_stylesheets=[dbc.themes.FLATLY])
+server = app.server
+
+app.layout = ddk.App(
+    children=[
+        ddk.Header(
+            children=[
+                # Remove org logo; keep optional placeholder if you want
+                # ddk.Logo(src=app.get_asset_url("logo_placeholder.png")),
+                ddk.Title("OD Flow Visualisation Dashboard (Prototype)"),
+            ]
+        ),
+        ddk.Block(
+            width=15,
+            children=[
+                ddk.ControlCard(
+                    style={
+                        "height": "100vh",
+                        "backgroundColor": BG_COLOUR,
+                        "borderColor": BORDER_COLOUR,
+                        "overflow": "auto",
+                    },
+                    children=[
+                        ddk.CardHeader(title="Map Controls"),
+                        dbc.Button(
+                            "Map Settings",
+                            id="open-settings",
+                            size="sm",
+                            color="dark",
+                            className="map-button",
+                        ),
+                        dbc.Modal(
+                            [
+                                dbc.ModalBody(
+                                    [
+                                        html.Div(id="opacity-title", className="modal-title"),
+                                        dcc.Slider(
+                                            min=0, max=100, step=10, value=50,
+                                            id="opacity-slider", marks=None
+                                        ),
+                                        html.Div("Basemap", className="modal-title"),
+                                        dcc.Dropdown(
+                                            id="map-options",
+                                            options=MAP_OPTIONS,
+                                            value="open-street-map",
+                                            clearable=False,
+                                        ),
+                                    ]
+                                ),
+                                dbc.ModalFooter(
+                                    dbc.Button(
+                                        "Close Settings",
+                                        id="close-settings",
+                                        size="sm",
+                                        color="dark",
+                                    )
+                                ),
+                            ],
+                            id="modal-settings",
+                            size="sm",
+                            is_open=False,
+                        ),
+                        dbc.Button(
+                            "Select Scenario",
+                            id="open-run",
+                            size="sm",
+                            color="dark",
+                            className="map-button",
+                        ),
+                        dbc.Modal(
+                            [
+                                dbc.ModalBody(
+                                    [
+                                        html.Div("Select a scenario (demo run log):", className="modal-title"),
+                                        dash_table.DataTable(
+                                            id="run-table",
+                                            columns=[{"name": c, "id": c} for c in run_log_df.columns],
+                                            data=run_log_df.to_dict("records"),
+                                            page_size=10,
+                                            filter_action="native",
+                                            sort_action="native",
+                                            row_selectable="single",
+                                            selected_rows=[],
+                                            style_as_list_view=True,
+                                        ),
+                                    ]
+                                ),
+                                dbc.ModalFooter(
+                                    dbc.Button(
+                                        "Close and Save",
+                                        id="close-run",
+                                        size="sm",
+                                        color="dark",
+                                    )
+                                ),
+                            ],
+                            id="modal-run",
+                            size="xl",
+                            is_open=False,
+                        ),
+                        html.Div("Default scenario selected.", id="scenario-text",
+                                 style={"padding": "8px", "color": FONT_COLOUR, "fontWeight": "bold"}),
+
+                        dcc.Store(id="stored-run"),
+
+                        dcc.Checklist(
+                            options=[{"label": "Zone Boundaries", "value": "zones"}],
+                            value=["zones"],
+                            id="layer-toggle",
+                            style={"color": FONT_COLOUR, "paddingLeft": "5px"},
+                        ),
+
+                        ddk.CardHeader(title="Direction"),
+                        dcc.RadioItems(
+                            id="direction-radio",
+                            options=DIRECTION_OPTIONS,
+                            value="od",
+                            style={"color": FONT_COLOUR},
+                        ),
+
+                        ddk.CardHeader(title="Time Period"),
+                        dcc.Dropdown(
+                            id="timeperiod-dropdown",
+                            options=TIMEPERIOD_OPTIONS,
+                            value="24",
+                            clearable=False,
+                        ),
+
+                        ddk.CardHeader(title="Vehicle"),
+                        dcc.Dropdown(
+                            id="mode-dropdown",
+                            options=MODE_OPTIONS,
+                            value="car",
+                            clearable=False,
+                        ),
+
+                        ddk.CardHeader(title="Purpose"),
+                        dcc.Dropdown(
+                            id="purpose-dropdown",
+                            options=PURPOSE_OPTIONS,
+                            value="all",
+                            clearable=False,
+                        ),
+                    ],
+                )
+            ],
+        ),
+        ddk.Block(
+            width=70,
+            children=[
+                ddk.Card(
+                    children=[dcc.Graph(id="od-map", figure=build_base_map(df_centroids, "open-street-map"))]
+                )
+            ],
+        ),
+    ]
+)
+
+# -------------------------
+# Callbacks
+# -------------------------
+@app.callback(Output("opacity-title", "children"), Input("opacity-slider", "value"))
+def set_opacity_title(v):
+    return f"Layer Opacity: {v}%"
+
+
+@app.callback(
+    Output("modal-settings", "is_open"),
+    [Input("open-settings", "n_clicks"), Input("close-settings", "n_clicks")],
+    State("modal-settings", "is_open"),
+)
+def toggle_settings(n1, n2, is_open):
+    if n1 or n2:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    Output("modal-run", "is_open"),
+    [Input("open-run", "n_clicks"), Input("close-run", "n_clicks")],
+    State("modal-run", "is_open"),
+)
+def toggle_run_modal(n1, n2, is_open):
+    if n1 or n2:
+        return not is_open
+    return is_open
+
+
+@app.callback(
+    [Output("scenario-text", "children"), Output("stored-run", "data")],
+    Input("run-table", "selected_rows"),
+)
+def update_scenario(selected_rows):
+    if not selected_rows:
+        # Default to first row
+        return "Default scenario selected.", run_log_df.iloc[0].to_dict()
+    return "Scenario selected.", run_log_df.iloc[selected_rows[0]].to_dict()
+
+
+@app.callback(
+    Output("od-map", "figure"),
+    [Input("od-map", "clickData"),
+     Input("layer-toggle", "value"),
+     Input("map-options", "value"),
+     Input("opacity-slider", "value")],
+    [State("od-map", "figure")],
+)
+def update_map(click_data, layer_toggle, map_style, opacity_pct, existing_fig):
+    # Always rebuild base to ensure basemap changes apply cleanly
+    fig = build_base_map(df_centroids, map_style)
+
+    # Toggle zone layer
+    show_zones = "zones" in (layer_toggle or [])
+    fig = toggle_zone_layer(fig, zones_gdf, visible=show_zones)
+
+    # Apply click overlay (placeholder for OD flow rendering)
+    fig = apply_click_flow_overlay(fig, click_data, opacity_pct)
+
+    return fig
+
+
+if __name__ == "__main__":
+    app.run_server(debug=True)
